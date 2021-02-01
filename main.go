@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"github.com/gorilla/securecookie"
+	"github.com/gorilla/sessions"
 	"log"
 	"net/http"
 	"os"
@@ -9,7 +12,21 @@ import (
 	"github.com/gorilla/mux"
 )
 
+var CookieHandler = securecookie.New(securecookie.GenerateRandomKey(64),securecookie.GenerateRandomKey(32))
+
+var store = sessions.NewCookieStore(securecookie.GenerateRandomKey(64))
+
+func initialize() {
+	store.Options = &sessions.Options{
+		Domain:   "localhost",
+		Path:     "/",
+		MaxAge:   3600 * 8, // 8 hours
+		HttpOnly: true,
+	}
+}
+
 func main() {
+	//initialize()
 	router := ConfigureRouter()
 	log.Fatal(http.ListenAndServe(":3001", handlers.LoggingHandler(os.Stdout, router)))
 }
@@ -18,18 +35,60 @@ func main() {
 func ConfigureRouter() *mux.Router {
 	router := mux.NewRouter()
 
-	router.PathPrefix("/static").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static/"))))
+	loginHandler := http.StripPrefix("/login", http.FileServer(http.Dir("./login/")))
+	router.PathPrefix("/login").Handler(loginHandler)
+
+	homePageHandler := http.StripPrefix("/home", http.FileServer(http.Dir("./home/")))
+	//router.PathPrefix("/home").Handler(homePageHandler)
+
+	router.HandleFunc("/home", func(w http.ResponseWriter, r *http.Request) {
+        // You may check if a session exists here
+        //userName := getUserName(r)
+		session, _ := store.Get(r, "cookie-name")
+		fmt.Println("session is", session)
+		fmt.Println("session bool is", session.Values["authenticated"])
+        if auth, ok := session.Values["authenticated"].(bool); !ok || !auth {
+			http.Redirect(w, r, "/login", 302)
+			return
+		}
+        //if userName == ""{
+        //	fmt.Println("redirecting as the userName is not set")
+        //    //http.Error(w, "you must login first", http.StatusUnauthorized)
+        //	http.Redirect(w, r, "/login", 302)
+        //    return
+        //}
+        //fmt.Println("userName is", userName)
+        // Serve the requested file:
+        homePageHandler.ServeHTTP(w, r)
+    })
 
 	router.HandleFunc("/", homeHandler)
 	router.HandleFunc("/metacortex", metacortexHandler)
 	router.HandleFunc("/agents/{name}", agentsHandler)
 
-	router.HandleFunc("/authenticate", authenticate)
+	router.HandleFunc("/authenticate", authenticateWithRedirect)
 
 	router.Handle("/api/megacity", authMiddleware(megacityHandler))
 	router.Handle("/api/levrai", authMiddleware(levraiHandler))
 
 	return router
+}
+
+func loginHandler(response http.ResponseWriter, request *http.Request) {
+	name := request.FormValue("name")
+	pass := request.FormValue("password")
+	redirectTarget := "/"
+	if name != "" && pass != "" {
+		// .. check credentials ..
+		setSession(name, response)
+		redirectTarget = "/home"
+	}
+	http.Redirect(response, request, redirectTarget, 302)
+}
+
+func logoutHandler(response http.ResponseWriter, request *http.Request) {
+	clearSession(response)
+	http.Redirect(response, request, "/login", 302)
 }
 
 func homeHandler(w http.ResponseWriter, r *http.Request) {
